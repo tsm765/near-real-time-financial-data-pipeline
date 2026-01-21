@@ -1,0 +1,2 @@
+﻿[2026-01-19T03:16:55.8844756+02:00] Starting prices-producer
+[2026-01-19T03:16:56.1715057+02:00] ERROR: time="2026-01-19T03:16:56+02:00" level=warning msg="The \"ALPHAVANTAGE_API_KEY\" variable is not set. Defaulting to a blank string."

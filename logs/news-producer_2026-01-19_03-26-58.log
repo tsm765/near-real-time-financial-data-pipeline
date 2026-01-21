@@ -1,0 +1,2 @@
+﻿[2026-01-19T03:26:58.1415415+02:00] Starting news-producer
+[2026-01-19T03:26:58.3955033+02:00] ERROR: time="2026-01-19T03:26:58+02:00" level=warning msg="The \"ALPHAVANTAGE_API_KEY\" variable is not set. Defaulting to a blank string."

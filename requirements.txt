@@ -1,0 +1,6 @@
+kafka-python
+requests
+python-dotenv
+pandas
+pyarrow
+azure-storage-blob

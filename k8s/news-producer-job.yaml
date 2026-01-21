@@ -1,0 +1,23 @@
+﻿apiVersion: batch/v1
+kind: Job
+metadata:
+  name: news-producer-job
+spec:
+  template:
+    spec:
+      containers:
+        - name: news-producer
+          image: infra-news-producer:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:29092"
+            - name: MENTIONS_TOPIC
+              value: "mentions"
+            - name: NEWSAPI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: newsapi-secret
+                  key: apiKey
+      restartPolicy: Never
+  backoffLimit: 1
