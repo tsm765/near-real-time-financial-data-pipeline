@@ -4,7 +4,7 @@
 This project demonstrates an end-to-end data engineering pipeline that ingests financial price data and market attention signals, processes them in near-real-time, and makes them available for analytics and visualization.
 
 ## Architecture
-![Architecture](docs/architecture.png)
+Attached in files section
 
 ## Tech Stack
 - Python
@@ -32,4 +32,4 @@ This project demonstrates an end-to-end data engineering pipeline that ingests f
 - No real-time execution systems
 
 ## Screenshots
-![Power BI Dashboard](docs/powerbi_dashboard.png)
+Attached in files section
