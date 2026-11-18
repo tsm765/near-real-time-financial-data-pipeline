@@ -18,6 +18,9 @@ UNIFIED_COLUMNS = [
     "topic",        # str: "prices" or "mentions"
 ]
 
+# Timestamp type written to Parquet: nanoseconds, UTC (see step 3 below).
+TIMESTAMP_DTYPE = "datetime64[ns, UTC]"
+
 
 def _ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -45,9 +48,19 @@ def unified_events_to_parquet_bytes(events: List[Dict[str, Any]]) -> bytes:
     # 2) Ensure all expected columns exist and are ordered
     df = _ensure_columns(df)
 
-    # 3) Enforce datetime types (UTC) for timestamp and ingest_time
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-    df["ingest_time"] = pd.to_datetime(df["ingest_time"], utc=True, errors="coerce")
+    # 3) Enforce datetime types (UTC) for timestamp and ingest_time.
+    #    The unit is pinned to NANOSECONDS on purpose: the Synapse silver view
+    #    (vw_unified_events_clean) converts these as epoch-nanoseconds
+    #    (divides by 1e9). pandas 3 defaults to microseconds, which would break
+    #    that conversion, so we never rely on the pandas default here.
+    #    format="ISO8601" parses each value on its own. Without it, pandas
+    #    guesses one format from the first value, and differently shaped ISO
+    #    strings (e.g. with/without fractional seconds) silently become NaT
+    #    and are then dropped in step 6.
+    for col in ("timestamp", "ingest_time"):
+        df[col] = pd.to_datetime(
+            df[col], utc=True, errors="coerce", format="ISO8601"
+        ).astype(TIMESTAMP_DTYPE)
 
     # 4) Enforce string columns
     for col in ["event_type", "ticker", "source", "topic"]:
