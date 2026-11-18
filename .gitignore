@@ -11,3 +11,11 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.local
+*.pem
+*.key
