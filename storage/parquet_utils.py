@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import uuid
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -86,3 +87,15 @@ def get_partition_path_from_events(events: List[Dict[str, Any]]) -> tuple[int, i
 
     anchor = ts.min()
     return int(anchor.year), int(anchor.month), int(anchor.day), int(anchor.hour)
+
+
+def build_unified_filename(year: int, month: int, day: int, hour: int) -> str:
+    """
+    Build a unique Parquet file name for one batch.
+
+    The UUID suffix guarantees that two batches landing in the same hour
+    never share a name, so one batch can never overwrite another.
+    The "unified_" prefix and ".parquet" suffix are kept so the Synapse
+    bronze view wildcard (unified_*.parquet) still matches.
+    """
+    return f"unified_{year}-{month:02d}-{day:02d}_{hour:02d}_{uuid.uuid4().hex}.parquet"

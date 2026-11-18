@@ -5,6 +5,7 @@ from typing import List, Dict, Any
 from azure.storage.blob import BlobServiceClient
 
 from .parquet_utils import (
+    build_unified_filename,
     get_partition_path_from_events,
     unified_events_to_parquet_bytes,
 )
@@ -31,10 +32,11 @@ def write_curated_unified_azure(
     year, month, day, hour = get_partition_path_from_events(events)
 
     # Build blob path for curated/unified_events
+    # (unique file name per batch -> batches in the same hour never overwrite each other)
     blob_path = (
         f"curated/unified_events/"
         f"year={year}/month={month:02d}/day={day:02d}/"
-        f"unified_{year}-{month:02d}-{day:02d}_{hour:02d}.parquet"
+        f"{build_unified_filename(year, month, day, hour)}"
     )
 
     # Convert events to Parquet bytes
@@ -47,6 +49,7 @@ def write_curated_unified_azure(
     # NOTE: we assume the container already exists.
     # You will create it once in the Azure Portal or via CLI.
     blob_client = container_client.get_blob_client(blob_path)
-    blob_client.upload_blob(data, overwrite=True)
+    # overwrite=False: if a name ever clashed, fail loudly instead of silently losing data
+    blob_client.upload_blob(data, overwrite=False)
 
     return blob_path

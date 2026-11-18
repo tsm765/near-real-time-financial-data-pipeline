@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from .parquet_utils import (
+    build_unified_filename,
     get_partition_path_from_events,
     unified_events_to_parquet_bytes,
 )
@@ -32,7 +33,8 @@ def write_curated_unified_local(events: List[Dict[str, Any]], base_dir: str) -> 
         / f"month={month:02d}"
         / f"day={day:02d}"
     )
-    filename = f"unified_{year}-{month:02d}-{day:02d}_{hour:02d}.parquet"
+    # Unique per batch -> batches in the same hour never overwrite each other
+    filename = build_unified_filename(year, month, day, hour)
 
     # Full path on local disk
     full_path = Path(base_dir) / rel_dir / filename
@@ -43,8 +45,8 @@ def write_curated_unified_local(events: List[Dict[str, Any]], base_dir: str) -> 
     # Convert events to Parquet bytes
     data = unified_events_to_parquet_bytes(events)
 
-    # Write bytes to disk
-    with open(full_path, "wb") as f:
+    # Write bytes to disk ("xb" = fail instead of overwriting an existing file)
+    with open(full_path, "xb") as f:
         f.write(data)
 
     return str(full_path)
