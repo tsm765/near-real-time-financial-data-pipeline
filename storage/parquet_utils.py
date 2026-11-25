@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import io
 import uuid
-from typing import Any, Dict, List
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Tuple
 
 import pandas as pd
 
@@ -20,6 +21,30 @@ UNIFIED_COLUMNS = [
 
 # Timestamp type written to Parquet: nanoseconds, UTC (see step 3 below).
 TIMESTAMP_DTYPE = "datetime64[ns, UTC]"
+
+# Columns every persisted row must have. Events missing any of them are
+# rejected explicitly (group_events_by_partition), never dropped silently.
+REQUIRED_COLUMNS = ["timestamp", "ingest_time", "ticker"]
+
+
+# (year, month, day, hour) of an event's own UTC timestamp
+PartitionKey = Tuple[int, int, int, int]
+
+
+def parse_timestamps(values) -> pd.Series:
+    """
+    The ONE timestamp parser used for both partitioning and Parquet writing,
+    so the two can never disagree about an event's time.
+
+    - utc=True: offsets are converted to UTC; naive strings are taken as UTC.
+    - format="ISO8601": each value is parsed on its own, so mixed ISO shapes
+      (with/without fractional seconds, Z/+HH:MM) all parse correctly.
+    - errors="coerce": missing or unparseable values become NaT. Callers must
+      handle NaT explicitly (see group_events_by_partition).
+    """
+    return pd.to_datetime(
+        pd.Series(values, dtype=object), utc=True, errors="coerce", format="ISO8601"
+    )
 
 
 def _ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -58,9 +83,7 @@ def unified_events_to_parquet_bytes(events: List[Dict[str, Any]]) -> bytes:
     #    strings (e.g. with/without fractional seconds) silently become NaT
     #    and are then dropped in step 6.
     for col in ("timestamp", "ingest_time"):
-        df[col] = pd.to_datetime(
-            df[col], utc=True, errors="coerce", format="ISO8601"
-        ).astype(TIMESTAMP_DTYPE)
+        df[col] = parse_timestamps(df[col]).astype(TIMESTAMP_DTYPE)
 
     # 4) Enforce string columns
     for col in ["event_type", "ticker", "source", "topic"]:
@@ -71,10 +94,15 @@ def unified_events_to_parquet_bytes(events: List[Dict[str, Any]]) -> bytes:
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df["mentions"] = pd.to_numeric(df["mentions"], errors="coerce").astype("Int64")
 
-    # 6) Drop any rows with no timestamp or ticker (invalid for analytics)
-    df = df.dropna(subset=["timestamp", "ticker"])
-    if df.empty:
-        raise ValueError("All rows became invalid after type enforcement (missing timestamp/ticker)")
+    # 6) Never drop rows silently. Events with a missing/invalid timestamp,
+    #    ingest_time or ticker must already have been rejected explicitly by
+    #    group_events_by_partition(); if any reach this point, fail loudly.
+    invalid = df[REQUIRED_COLUMNS].isna().any(axis=1)
+    if invalid.any():
+        raise ValueError(
+            f"{int(invalid.sum())} of {len(df)} rows have a missing/invalid "
+            f"{'/'.join(REQUIRED_COLUMNS)}; they must be rejected before serialization"
+        )
 
     # 7) Write DataFrame to Parquet in memory
     buffer = io.BytesIO()
@@ -82,24 +110,118 @@ def unified_events_to_parquet_bytes(events: List[Dict[str, Any]]) -> bytes:
     return buffer.getvalue()
 
 
-def get_partition_path_from_events(events: List[Dict[str, Any]]) -> tuple[int, int, int, int]:
+def group_events_by_partition(
+    events: List[Dict[str, Any]],
+) -> Tuple[Dict[PartitionKey, List[Dict[str, Any]]], List[Dict[str, Any]]]:
     """
-    Given a list of events, look at their timestamp field and pick an "anchor" time.
-    We use the minimum timestamp in the batch as the anchor for partitioning.
+    Split a batch by each event's OWN timestamp (UTC year/month/day/hour),
+    so every event lands in its correct partition.
 
-    Returns: (year, month, day, hour) as integers.
+    Every input event ends up in exactly one of:
+      - groups: {(year, month, day, hour): [events...]}, sorted by time
+      - rejected: events that can't be persisted correctly: missing or
+        unparseable `timestamp` or `ingest_time` (both parsed with the same
+        parser used for writing), or a missing ticker. They are NOT written
+        anywhere; the caller reports them explicitly.
     """
-    ts = pd.to_datetime(
-        [e.get("timestamp") for e in events],
-        utc=True,
-        errors="coerce",
-    )
-    ts = ts.dropna()
-    if ts.empty:
-        raise ValueError("No valid timestamps in events for partitioning")
+    groups: Dict[PartitionKey, List[Dict[str, Any]]] = {}
+    rejected: List[Dict[str, Any]] = []
 
-    anchor = ts.min()
-    return int(anchor.year), int(anchor.month), int(anchor.day), int(anchor.hour)
+    timestamps = parse_timestamps([e.get("timestamp") for e in events])
+    ingest_times = parse_timestamps([e.get("ingest_time") for e in events])
+    for event, ts, ingest in zip(events, timestamps, ingest_times):
+        if rejection_reason(event, ts, ingest):
+            rejected.append(event)
+            continue
+        key = (int(ts.year), int(ts.month), int(ts.day), int(ts.hour))
+        groups.setdefault(key, []).append(event)
+
+    return dict(sorted(groups.items())), rejected
+
+
+def rejection_reason(event: Dict[str, Any], ts=None, ingest=None) -> str:
+    """
+    Why an event can't be persisted ("" if it can). ts/ingest are the parsed
+    values; when omitted they are parsed here with the shared parser.
+    """
+    if ts is None:
+        ts = parse_timestamps([event.get("timestamp")]).iloc[0]
+    if ingest is None:
+        ingest = parse_timestamps([event.get("ingest_time")]).iloc[0]
+    reasons = []
+    if pd.isna(ts):
+        reasons.append(f"invalid timestamp {event.get('timestamp')!r}")
+    if pd.isna(ingest):
+        reasons.append(f"invalid ingest_time {event.get('ingest_time')!r}")
+    ticker = event.get("ticker")
+    if ticker is None or (isinstance(ticker, float) and pd.isna(ticker)) or ticker == "":
+        reasons.append("missing ticker")
+    return ", ".join(reasons)
+
+
+@dataclass
+class WriteResult:
+    """Outcome of writing one batch: one path per partition, plus rejected events."""
+    paths: List[str] = field(default_factory=list)
+    rejected: List[Dict[str, Any]] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        text = f"{len(self.paths)} file(s): " + ", ".join(self.paths)
+        if self.rejected:
+            text += f" | {len(self.rejected)} event(s) rejected"
+        return text
+
+
+class PartialWriteError(RuntimeError):
+    """
+    Some partitions of a batch were written, then a write failed.
+
+    - written_paths: files that were successfully written (do NOT rewrite them)
+    - unwritten_events: EVERY event not yet persisted (the failing partition
+      and all partitions after it). Rejected events are not included: they
+      were handled on purpose and must not be retried.
+    """
+
+    def __init__(self, written_paths, unwritten_events, rejected, cause):
+        self.written_paths = list(written_paths)
+        self.unwritten_events = list(unwritten_events)
+        self.rejected = list(rejected)
+        super().__init__(
+            f"{len(self.written_paths)} partition file(s) written, "
+            f"{len(self.unwritten_events)} event(s) unwritten: {cause}"
+        )
+
+
+def write_partitioned(
+    events: List[Dict[str, Any]],
+    write_group: Callable[[PartitionKey, List[Dict[str, Any]]], str],
+) -> WriteResult:
+    """
+    Write a batch as one file per partition, using write_group(key, events)
+    for each partition (local disk or Azure). Shared by both writers.
+
+    Raises PartialWriteError if any partition fails, carrying every event
+    that was not written so the caller can retry exactly those.
+    """
+    groups, rejected = group_events_by_partition(events)
+
+    for event in rejected:
+        print(
+            f"[storage] WARN rejecting event (not written): {rejection_reason(event)} | "
+            f"ticker={event.get('ticker')!r} topic={event.get('topic')!r} "
+            f"timestamp={event.get('timestamp')!r} ingest_time={event.get('ingest_time')!r}"
+        )
+
+    written: List[str] = []
+    keys = list(groups)
+    for i, key in enumerate(keys):
+        try:
+            written.append(write_group(key, groups[key]))
+        except Exception as e:
+            unwritten = [ev for k in keys[i:] for ev in groups[k]]
+            raise PartialWriteError(written, unwritten, rejected, e) from e
+
+    return WriteResult(paths=written, rejected=rejected)
 
 
 def build_unified_filename(year: int, month: int, day: int, hour: int) -> str:
