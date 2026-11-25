@@ -9,18 +9,20 @@ from .config import (
     AZURE_CONTAINER_NAME,
 )
 
+from .parquet_utils import WriteResult
 from .local_writer import write_curated_unified_local
 from .azure_writer import write_curated_unified_azure
 
 
-def write_curated_unified(events: List[Dict[str, Any]]) -> Optional[str]:
+def write_curated_unified(events: List[Dict[str, Any]]) -> Optional[WriteResult]:
     """
     Route a batch of unified events to the correct storage destination based on STORAGE_MODE.
 
     STORAGE_MODE:
       - "none": do nothing, return None
-      - "local": write to local Parquet, return file path
-      - "azure": upload to ADLS Gen2 (Blob), return blob path
+      - "local": write to local Parquet, return WriteResult (file paths)
+      - "azure": upload to ADLS Gen2 (Blob), return WriteResult (blob paths)
+    May raise PartialWriteError (see parquet_utils).
     """
     mode = STORAGE_MODE
 

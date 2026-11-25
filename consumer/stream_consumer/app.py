@@ -32,6 +32,7 @@ print("[DEBUG] LOCAL_DATA_DIR env =", os.getenv("LOCAL_DATA_DIR"))
 
 # Now it's safe to import storage router (it will see STORAGE_MODE)
 from storage.router import write_curated_unified  # type: ignore
+from storage.parquet_utils import PartialWriteError  # type: ignore
 from storage import config as storage_config
 
 print("[DEBUG] storage.config.STORAGE_MODE   =", storage_config.STORAGE_MODE)
@@ -141,11 +142,29 @@ def maybe_flush(consumer, force: bool = False) -> bool:
         try:
             target = write_curated_unified(BUFFER)
             if target:
-                print(f"[storage] wrote {len(BUFFER)} events -> {target}")
+                # Report persisted and rejected separately: a batch with
+                # rejected events was NOT fully written.
+                rejected = len(getattr(target, "rejected", []))
+                persisted = len(BUFFER) - rejected
+                paths = getattr(target, "paths", [target])
+                msg = f"[storage] persisted {persisted} events in {len(paths)} file(s)"
+                if paths:
+                    msg += " -> " + ", ".join(map(str, paths))
+                if rejected:
+                    msg += f" | REJECTED {rejected} events (not written, see warnings)"
+                print(msg)
             else:
                 print(f"[storage] STORAGE_MODE=none, skipped write, batch size={len(BUFFER)}")
         except Exception as e:
             # Keep the events and their offsets; retry later.
+            if isinstance(e, PartialWriteError):
+                # Some partition files were written: keep ONLY the events that
+                # weren't, so the retry doesn't rewrite the finished files.
+                # Offsets stay uncommitted until every event is persisted.
+                print(f"[storage] partial write: {len(e.written_paths)} file(s) done, "
+                      f"{len(e.unwritten_events)} event(s) kept for retry, "
+                      f"{len(e.rejected)} event(s) rejected (not retried)")
+                BUFFER = list(e.unwritten_events)
             failed_write_attempts += 1
             backoff = min(2 ** (failed_write_attempts - 1), RETRY_BACKOFF_MAX_SECONDS)
             next_retry_at = now + backoff

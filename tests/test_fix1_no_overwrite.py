@@ -60,8 +60,8 @@ class LocalWriterTests(unittest.TestCase):
     def test_two_batches_same_hour_both_survive(self):
         """The original bug: the 2nd batch in an hour overwrote the 1st."""
         with tempfile.TemporaryDirectory() as tmp:
-            p1 = local_writer.write_curated_unified_local([_event(price=1.0)], tmp)
-            p2 = local_writer.write_curated_unified_local([_event(price=2.0)], tmp)
+            p1 = local_writer.write_curated_unified_local([_event(price=1.0)], tmp).paths[0]
+            p2 = local_writer.write_curated_unified_local([_event(price=2.0)], tmp).paths[0]
 
             self.assertNotEqual(p1, p2)
             files = list(Path(tmp).rglob("*.parquet"))
@@ -72,7 +72,7 @@ class LocalWriterTests(unittest.TestCase):
 
     def test_path_still_matches_synapse_wildcard(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = local_writer.write_curated_unified_local([_event()], tmp)
+            path = local_writer.write_curated_unified_local([_event()], tmp).paths[0]
             rel = Path(path).relative_to(tmp).as_posix()
             self.assertRegex(rel, SYNAPSE_PATH_RE)
             self.assertIn("year=2026/month=01/day=20/unified_2026-01-20_14_", rel)
@@ -80,7 +80,7 @@ class LocalWriterTests(unittest.TestCase):
     def test_file_contents_unchanged(self):
         """Same columns/order as before the fix, so the SQL views keep working."""
         with tempfile.TemporaryDirectory() as tmp:
-            path = local_writer.write_curated_unified_local([_event()], tmp)
+            path = local_writer.write_curated_unified_local([_event()], tmp).paths[0]
             df = pd.read_parquet(path)
             self.assertEqual(
                 list(df.columns),
@@ -95,8 +95,8 @@ class AzureWriterTests(unittest.TestCase):
             container = bsc.from_connection_string.return_value.get_container_client.return_value
             blob_client = container.get_blob_client.return_value
 
-            path1 = azure_writer.write_curated_unified_azure([_event()], "conn", "finstream")
-            path2 = azure_writer.write_curated_unified_azure([_event()], "conn", "finstream")
+            path1 = azure_writer.write_curated_unified_azure([_event()], "conn", "finstream").paths[0]
+            path2 = azure_writer.write_curated_unified_azure([_event()], "conn", "finstream").paths[0]
 
             self.assertNotEqual(path1, path2)
             self.assertRegex(path1, SYNAPSE_PATH_RE)
